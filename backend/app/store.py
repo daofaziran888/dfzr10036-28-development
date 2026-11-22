@@ -21,6 +21,10 @@ class Store:
     def rows(self, module: str) -> list[dict[str, Any]]:
         return self._tables.setdefault(module, [])
 
+    def reset(self) -> None:
+        """清空全部模块表（含运行期新增表），用于测试隔离。"""
+        self._tables.clear()
+
     def find(self, module: str, entry_id: int) -> dict[str, Any] | None:
         for row in self.rows(module):
             if int(row.get("id", 0)) == entry_id:

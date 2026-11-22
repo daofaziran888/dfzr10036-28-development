@@ -17,6 +17,37 @@ class CompactionService(BaseModuleService):
     ACTION_RULES = {"启动合并": "合并中", "取消合并": "已完成", "标记失败": "合并失败"}
     NEGATIVE_ACTIONS = []
 
+    def claim_by_ownership(self, entry_id: int, batch_id: int) -> dict[str, Any] | None:
+        """合并任务依据分片维护归属明细，从指定维护批次领取可操作对象。
+
+        领取结果（含仍阻塞路径）回写到合并任务，供维护侧核对。
+        """
+        from app.services.shard_maintain import shard_maintain
+
+        entry = self.get_entry(entry_id)
+        if entry is None:
+            return None
+        result = shard_maintain.claim_objects(batch_id)
+        if not result.get("ok"):
+            return result
+        entry["领取批次编号"] = result["批次编号"]
+        entry["可操作对象"] = result["可操作对象"]
+        entry["仍阻塞路径"] = result["仍阻塞路径"]
+        entry["claim_token"] = result["claim_token"]
+        return result
+
+    def report_by_source(self, entry_id: int) -> dict[str, Any] | None:
+        """回传每个来源（管道）实际释放的空间与仍阻塞路径。"""
+        from app.services.shard_maintain import shard_maintain
+
+        entry = self.get_entry(entry_id)
+        if entry is None:
+            return None
+        report = shard_maintain.source_report(str(entry.get("目标表", "")))
+        entry["来源释放空间MB"] = report["按来源释放空间MB"]
+        entry["仍阻塞路径"] = report["仍阻塞路径"]
+        return report
+
     def trigger_expire_and_metric(self, entry_id: int) -> dict[str, Any] | None:
         """合并完成后触发expire_snap清理和metric_aggr聚合更新。
 

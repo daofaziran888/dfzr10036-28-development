@@ -45,10 +45,14 @@ class SinkWriterService(BaseModuleService):
         commit_rows.append(commit)
         return commit
 
-    def trigger_block_cleanup(self, entry_id: int) -> dict[str, Any] | None:
+    def trigger_block_cleanup(
+        self, entry_id: int, files: list[dict[str, Any]] | None = None
+    ) -> dict[str, Any] | None:
         """写入阻塞时触发 compaction 合并小文件。
 
         数据流链路: sink_writer(写入阻塞) -> compaction
+        阻塞批次携带文件清单时，先逐文件做归属校验，形成分片维护归属明细，
+        越权文件会被拦截并在返回中明示，不会进入后续维修任务。
         """
         entry = self.get_entry(entry_id)
         if entry is None or entry.get("status") != "写入阻塞":
@@ -56,6 +60,7 @@ class SinkWriterService(BaseModuleService):
 
         comp_rows = store.rows("compaction")
         new_id = max((int(r.get("id", 0)) for r in comp_rows), default=0) + 1
+        block_batch = f"BLK-{entry.get('管道编号', 'X')}-{new_id:04d}"
         comp = {
             "id": new_id,
             "任务编号": f"COMP-{new_id:04d}",
@@ -66,9 +71,37 @@ class SinkWriterService(BaseModuleService):
             "执行内存": "2GB",
             "合并耗时": "未执行",
             "释放空间": "未执行",
+            "阻塞批次": block_batch,
             "status": "合并中",
             "pending": True,
             "abnormal": False,
         }
         comp_rows.append(comp)
+
+        ownership_result: dict[str, Any] | None = None
+        if files:
+            # 延迟导入避免服务模块间的循环依赖。
+            from app.services.shard_maintain import shard_maintain
+
+            registered: list[dict[str, Any]] = []
+            for item in files:
+                row = shard_maintain.register_ownership({
+                    "管道编号": entry.get("管道编号"),
+                    "目标表": entry.get("目标载体"),
+                    "文件路径": item.get("文件路径"),
+                    "文件大小MB": item.get("文件大小MB", 0),
+                    "阻塞批次": block_batch,
+                    "清理区间": item.get("清理区间"),
+                    "共享授权管道": item.get("共享授权管道") or [],
+                })
+                registered.append(row)
+            ownership_result = {
+                "阻塞批次": block_batch,
+                "登记有效": [r["文件路径"] for r in registered if r["登记状态"] == "登记有效"],
+                "越权拦截": [
+                    {"文件路径": r["文件路径"], "拒绝原因": r.get("拒绝原因")}
+                    for r in registered if r["登记状态"] != "登记有效"
+                ],
+            }
+        comp["归属校验"] = ownership_result
         return comp

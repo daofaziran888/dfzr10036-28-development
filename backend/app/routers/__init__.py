@@ -2,5 +2,6 @@
 from __future__ import annotations
 
 from app.routers import resource
+from app.routers import shard_maintain as shard_maintain_router
 
-ROUTERS = [resource]
+ROUTERS = [shard_maintain_router, resource]
